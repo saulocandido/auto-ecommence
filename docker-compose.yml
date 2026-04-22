@@ -1,0 +1,168 @@
+name: autocommerce
+
+services:
+  brain:
+    build:
+      context: .
+      dockerfile: src/AutoCommerce.Brain/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+      ApiKey__Master: ${AUTOCOMMERCE_MASTER_API_KEY:-dev-master-key-change-me}
+      ConnectionStrings__Default: Data Source=/app/data/autocommerce.db
+    ports:
+      - "5080:8080"
+    restart: unless-stopped
+    volumes:
+      - brain-data:/app/data
+      - brain-keys:/app/.aspnet/DataProtection-Keys
+    networks:
+      - autocommerce
+
+  configuration:
+    build:
+      context: .
+      dockerfile: src/AutoCommerce.Configuration/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+      OpenAI__ApiKey: ${OPENAI_API_KEY:-}
+      Gemini__ApiKey: ${GEMINI_API_KEY:-}
+      Google__ApiKey: ${GOOGLE_API_KEY:-}
+      ConfigurationSettings__DatabasePath: /app/data/configuration-settings.db
+      # Subscriber webhook URLs — called after every settings change
+      Subscribers__0: http://product-selection:8080/configuration/sync
+    ports:
+      - "5120:8080"
+    restart: unless-stopped
+    volumes:
+      - configuration-data:/app/data
+    networks:
+      - autocommerce
+
+  product-selection:
+    build:
+      context: .
+      dockerfile: src/AutoCommerce.ProductSelection/Dockerfile
+    depends_on:
+      brain:
+        condition: service_started
+      configuration:
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+      Brain__ApiKey: ${AUTOCOMMERCE_MASTER_API_KEY:-dev-master-key-change-me}
+      Brain__BaseUrl: http://brain:8080/
+      Configuration__BaseUrl: http://configuration:8080/
+      OpenAI__ApiKey: ${OPENAI_API_KEY:-}
+      Gemini__ApiKey: ${GEMINI_API_KEY:-}
+      Google__ApiKey: ${GOOGLE_API_KEY:-}
+      RecommendationCache__DatabasePath: /app/data/recommendation-cache.db
+      Scanner__Enabled: ${AUTOCOMMERCE_SCANNER_ENABLED:-false}
+    ports:
+      - "5090:8080"
+    restart: unless-stopped
+    volumes:
+      - product-selection-data:/app/data
+      - product-selection-keys:/app/.aspnet/DataProtection-Keys
+    networks:
+      - autocommerce
+
+  supplier-selection:
+    build:
+      context: .
+      dockerfile: src/AutoCommerce.SupplierSelection/Dockerfile
+    depends_on:
+      brain:
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+      Brain__ApiKey: ${AUTOCOMMERCE_MASTER_API_KEY:-dev-master-key-change-me}
+      Brain__BaseUrl: http://brain:8080/
+      Selection__MinScore: ${SUPPLIER_MIN_SCORE:-40}
+      Selection__MaxShippingDays: ${SUPPLIER_MAX_SHIPPING_DAYS:-21}
+      Selection__MinStock: ${SUPPLIER_MIN_STOCK:-10}
+      Selection__TargetMarket: ${SUPPLIER_TARGET_MARKET:-IE}
+      DiscoveryWorker__Enabled: ${SUPPLIER_DISCOVERY_ENABLED:-true}
+      DiscoveryWorker__IntervalSeconds: ${SUPPLIER_DISCOVERY_INTERVAL_SECONDS:-30}
+      PriceMonitor__Enabled: ${SUPPLIER_PRICE_MONITOR_ENABLED:-false}
+    ports:
+      - "5100:8080"
+    restart: unless-stopped
+    volumes:
+      - supplier-selection-keys:/app/.aspnet/DataProtection-Keys
+    networks:
+      - autocommerce
+
+  store-management:
+    build:
+      context: .
+      dockerfile: src/AutoCommerce.StoreManagement/Dockerfile
+    depends_on:
+      brain:
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+      Brain__BaseUrl: http://brain:8080
+      Brain__ApiKey: ${AUTOCOMMERCE_MASTER_API_KEY:-dev-master-key-change-me}
+      BrainUrl: http://brain:8080
+      Shopify__ShopDomain: ${SHOPIFY_SHOP_DOMAIN:-}
+      Shopify__AccessToken: ${SHOPIFY_ACCESS_TOKEN:-}
+      Shopify__ApiKey: ${SHOPIFY_API_KEY:-}
+      Shopify__ApiSecret: ${SHOPIFY_API_SECRET:-}
+      Shopify__WebhookSecret: ${SHOPIFY_WEBHOOK_SECRET:-}
+      Shopify__PollIntervalSeconds: ${SHOPIFY_POLL_INTERVAL_SECONDS:-10}
+      Shopify__MaxRetryAttempts: ${SHOPIFY_MAX_RETRY_ATTEMPTS:-5}
+      Shopify__RetryBaseDelayMs: ${SHOPIFY_RETRY_BASE_DELAY_MS:-500}
+    ports:
+      - "5110:8080"
+    restart: unless-stopped
+    volumes:
+      - store-management-data:/app/data
+      - store-management-keys:/app/.aspnet/DataProtection-Keys
+    networks:
+      - autocommerce
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+      args:
+        VITE_BRAIN_URL: /brain-api
+        VITE_SELECTION_URL: /selection-api
+        VITE_SUPPLIER_URL: /supplier-api
+        VITE_STORE_URL: /store-api
+        VITE_CONFIG_URL: /config-api
+    depends_on:
+      brain:
+        condition: service_started
+      configuration:
+        condition: service_started
+      product-selection:
+        condition: service_started
+      supplier-selection:
+        condition: service_started
+      store-management:
+        condition: service_started
+    ports:
+      - "3000:8080"
+    restart: unless-stopped
+    networks:
+      - autocommerce
+
+networks:
+  autocommerce:
+    driver: bridge
+
+volumes:
+  brain-data:
+  brain-keys:
+  configuration-data:
+  product-selection-data:
+  product-selection-keys:
+  supplier-selection-keys:
+  store-management-data:
+  store-management-keys:

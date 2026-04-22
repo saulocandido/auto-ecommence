@@ -1,0 +1,6 @@
+@AutoCommerce.ProductSelection_HostAddress = http://localhost:5294
+
+GET {{AutoCommerce.ProductSelection_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

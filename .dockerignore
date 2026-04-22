@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+**/*.csproj.user
+.vs/
+.claude/
+.codex
+dashboard/node_modules/
+dashboard/dist/
+src/AutoCommerce.ProductSelection/App_Data/

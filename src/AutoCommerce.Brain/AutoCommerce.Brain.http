@@ -1,0 +1,6 @@
+@AutoCommerce.Brain_HostAddress = http://localhost:5063
+
+GET {{AutoCommerce.Brain_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

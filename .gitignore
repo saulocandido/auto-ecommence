@@ -1,0 +1,53 @@
+# ── .NET ──
+**/bin/
+**/obj/
+**/*.user
+**/*.suo
+*.pdb
+TestResults/
+
+# ── Node / Vite / Dashboard ──
+**/node_modules/
+dashboard/dist/
+dashboard/.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── IDEs / Editors ──
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Secrets & environment ──
+.env
+.env.local
+.env.*.local
+appsettings.Local.json
+appsettings.*.Local.json
+secrets.json
+
+# ── Databases & data (dev only — SQLite files in project dir) ──
+*.db
+*.db-shm
+*.db-wal
+src/AutoCommerce.ProductSelection/App_Data/
+src/AutoCommerce.Brain/brain.db*
+src/AutoCommerce.StoreManagement/store.db*
+
+# ── Playwright / automation artefacts ──
+**/.playwright/
+**/playwright-report/
+**/test-results/
+shopify-session.json
+shopify-session.meta.json
+automation-screenshots/
+
+# ── Claude / Codex tool caches ──
+.claude/
+.codex
