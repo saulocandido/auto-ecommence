@@ -397,7 +397,91 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
             await page.WaitForTimeoutAsync(2000);
         }
 
+        // First-visit onboarding / category pickers / "what are you looking for?" modals
+        // appear right here on real sessions. Dismiss before any caller tries to interact.
+        await DismissPopupsAsync(page, appFrame);
+
         return appFrame;
+    }
+
+    /// <summary>
+    /// Dismisses any onboarding / category-picker / "what are you looking for?" modals
+    /// that the app shows on first visit. Tries up to <paramref name="rounds"/> rounds
+    /// so chained popups (e.g. category picker → welcome tour) all get cleared. Each
+    /// round: walk a list of likely dismiss selectors and click the first match; if
+    /// nothing matches, press Escape as a last resort and bail.
+    /// Safe to call on any page — if there's no popup, it's a no-op.
+    /// </summary>
+    private async Task DismissPopupsAsync(IPage page, IFrame frame, int rounds = 4)
+    {
+        // Selectors ordered by specificity. "Skip"/"Not now"/"No thanks" first because
+        // they are usually the intended "proceed without answering" action. "Close" /
+        // aria-label=close last because some apps use them for panels we'd want open.
+        var dismissSelectors = new[]
+        {
+            "button:has-text('Skip')",
+            "button:has-text('Skip for now')",
+            "button:has-text('Skip this step')",
+            "button:has-text('Maybe later')",
+            "button:has-text('Not now')",
+            "button:has-text('No thanks')",
+            "button:has-text('No, thanks')",
+            "button:has-text('Dismiss')",
+            "button:has-text('Got it')",
+            "button:has-text('Cancel')",
+            "button:has-text('Close')",
+            "button[aria-label='Close' i]",
+            "button[aria-label='Dismiss' i]",
+            "[role='dialog'] button[aria-label*='close' i]",
+            "[role='dialog'] button[aria-label*='cancel' i]",
+            // Last-resort visual X buttons
+            "button.modal-close",
+            "button.dialog-close",
+            "[data-testid='modal-close']",
+            "[data-dismiss='modal']",
+        };
+
+        for (var round = 0; round < rounds; round++)
+        {
+            var dismissed = false;
+
+            // Try clicking a dismiss element in the app frame, then in the top-level page.
+            foreach (var targetContext in new[] { (object)frame, page })
+            {
+                foreach (var sel in dismissSelectors)
+                {
+                    try
+                    {
+                        var el = targetContext is IFrame f
+                            ? await f.QuerySelectorAsync(sel)
+                            : await page.QuerySelectorAsync(sel);
+                        if (el == null) continue;
+                        var isVisible = await el.IsVisibleAsync();
+                        if (!isVisible) continue;
+
+                        _logger.LogInformation("Dismissing popup: clicked '{Selector}' (round {Round})", sel, round + 1);
+                        try { await el.ScrollIntoViewIfNeededAsync(new() { Timeout = 1500 }); } catch { }
+                        try { await el.ClickAsync(new() { Timeout = 3000, Force = true }); }
+                        catch { await el.EvaluateAsync("el => el.click()"); }
+                        dismissed = true;
+                        break;
+                    }
+                    catch { /* selector invalid or element detached; try next */ }
+                }
+                if (dismissed) break;
+            }
+
+            if (!dismissed)
+            {
+                // Nothing found — try Escape once as a catch-all (works for most modals).
+                try { await page.Keyboard.PressAsync("Escape"); } catch { }
+                await page.WaitForTimeoutAsync(300);
+                return;
+            }
+
+            // Give the next modal (if any) a moment to appear before the next round.
+            await page.WaitForTimeoutAsync(700);
+        }
     }
 
     /// <summary>
