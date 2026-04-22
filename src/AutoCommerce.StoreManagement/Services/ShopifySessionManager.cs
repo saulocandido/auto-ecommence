@@ -294,16 +294,23 @@ public class ShopifySessionManager : IShopifySessionManager, IAsyncDisposable
             await page.WaitForTimeoutAsync(rng.Next(500, 1500));
 
             _logger.LogInformation("Credential login (headed): navigating to {Url}", targetUrl);
-            await page.GotoAsync(targetUrl, new() { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30000 });
+            // NetworkIdle never settles on Shopify admin (analytics beacons run forever),
+            // so the old GotoAsync was hanging the full 30s timeout. DOMContentLoaded +
+            // a short settle delay is what we actually need.
+            await page.GotoAsync(targetUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 20000 });
             await page.WaitForTimeoutAsync(rng.Next(1500, 3000));
+
+            // Detect Cloudflare / anti-bot interstitials so we don't wait on them forever.
+            await FailIfCloudflareAsync(page);
 
             // ── Fill email ──
             var emailSelector = "input[type='email'], input[name='account[email]'], input[autocomplete='username'], #account_email";
             var emailInput = await page.QuerySelectorAsync(emailSelector);
             if (emailInput == null)
             {
-                await page.GotoAsync("https://accounts.shopify.com/lookup", new() { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30000 });
+                await page.GotoAsync("https://accounts.shopify.com/lookup", new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 20000 });
                 await page.WaitForTimeoutAsync(rng.Next(1500, 3000));
+                await FailIfCloudflareAsync(page);
                 emailInput = await page.QuerySelectorAsync(emailSelector);
             }
 
@@ -406,7 +413,7 @@ public class ShopifySessionManager : IShopifySessionManager, IAsyncDisposable
                 {
                     // We're past auth but need to pick a store — navigate to target
                     _logger.LogInformation("Credential login: store picker detected, navigating to target");
-                    await page.GotoAsync(targetUrl, new() { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 30000 });
+                    await page.GotoAsync(targetUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 20000 });
                     await page.WaitForTimeoutAsync(3000);
                     postDiag = await LoginStateDetector.DetectAsync(page, config.FindProductsUrl, ct);
                     if (postDiag.State == LoginState.Authenticated) break;
@@ -1281,6 +1288,35 @@ public class ShopifySessionManager : IShopifySessionManager, IAsyncDisposable
             await page.Mouse.MoveAsync((float)targetX, (float)targetY);
         }
         catch { /* element may not have bounding box */ }
+    }
+
+    /// <summary>
+    /// Throws if the current page is a Cloudflare / anti-bot interstitial. These pages
+    /// never progress to the login form, so waiting on them burns our timeout budget.
+    /// We surface a clear error so the UI can tell the user to complete the challenge
+    /// in the VNC window or retry with fresh cookies.
+    /// </summary>
+    private static async Task FailIfCloudflareAsync(IPage page)
+    {
+        try
+        {
+            var title = await page.TitleAsync();
+            var url = page.Url ?? "";
+            var titleLower = (title ?? "").ToLowerInvariant();
+            if (titleLower.Contains("just a moment") ||
+                titleLower.Contains("attention required") ||
+                titleLower.Contains("cloudflare") ||
+                url.Contains("__cf_chl") ||
+                url.Contains("cdn-cgi/challenge-platform"))
+            {
+                throw new InvalidOperationException(
+                    $"Cloudflare challenge detected on {url} (title: '{title}'). " +
+                    "Shopify's anti-bot blocked the automated browser. Try again after a few minutes, " +
+                    "or use the Manual Login browser (VNC window) to complete the challenge by hand.");
+            }
+        }
+        catch (InvalidOperationException) { throw; }
+        catch { /* page may be mid-nav */ }
     }
 
     /// <summary>

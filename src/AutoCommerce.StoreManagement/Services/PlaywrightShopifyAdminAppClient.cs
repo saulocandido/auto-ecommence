@@ -364,9 +364,10 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         if (!currentUrl.StartsWith(appRoot, StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogInformation("Opening app root: {Url}", appRoot);
-            await page.GotoAsync(appRoot, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
-            try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
-            catch (TimeoutException) { /* admin shell never settles; proceed */ }
+            await page.GotoAsync(appRoot, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30000 });
+            // Skip NetworkIdle — Shopify admin has analytics beacons that never quiesce.
+            // Short fixed settle is faster and reliable enough for the iframe to mount.
+            await page.WaitForTimeoutAsync(2500);
 
             await EnsureAuthenticatedAsync(page, appRoot, ct);
 
@@ -385,9 +386,8 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         if (!subLinkClicked && !string.IsNullOrWhiteSpace(targetSubUrl))
         {
             _logger.LogInformation("In-app link not found, navigating page directly to {Url}", targetSubUrl);
-            await page.GotoAsync(targetSubUrl!, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
-            try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
-            catch (TimeoutException) { }
+            await page.GotoAsync(targetSubUrl!, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30000 });
+            await page.WaitForTimeoutAsync(2500);
             await EnsureAuthenticatedAsync(page, targetSubUrl, ct);
             appFrame = await WaitForAppFrameAsync(page, config.AppUrl, ct);
         }
