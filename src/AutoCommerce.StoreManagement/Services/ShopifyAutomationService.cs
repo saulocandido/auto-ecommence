@@ -208,15 +208,19 @@ public class ShopifyAutomationService : IShopifyAutomationService
         if (string.IsNullOrWhiteSpace(cfg.ImportListUrl))
             throw new InvalidOperationException("Import List URL is not configured. Set it in automation config first.");
 
-        // Auth gate — do NOT start the browser work if we already know the session is dead.
-        // Skipping this when _sessions is null keeps the unit-test path simple.
+        // Auth gate — only block on a DEFINITIVE "login_required". For "error" (validation
+        // step itself threw) or "unknown" (never validated) we let the run proceed; the
+        // automation's own per-step auth gate will catch a genuinely bad session and
+        // transition the run to LoginRequired cleanly.
         if (_sessions != null)
         {
             var status = await _sessions.ValidateAsync(cfg, ct);
-            if (status.State != "connected")
+            if (status.State == "login_required")
                 throw new InvalidOperationException(
-                    $"Shopify session is not connected ({status.State}). " +
-                    "Open the Shopify Session panel and connect before starting a run.");
+                    $"Shopify session needs login ({status.Message ?? "cookies don't authenticate"}). " +
+                    "Open the Shopify Session panel, connect/upload a session, then click Run Automation again.");
+            if (status.State == "error")
+                _logger.LogWarning("Pre-flight validation returned error ({Msg}) — proceeding anyway, per-step auth gate will catch real failures", status.Message);
         }
 
         var products = await _brain.GetProductsAsync("active", ct);

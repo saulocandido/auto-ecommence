@@ -42,19 +42,11 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         await using var session = await OpenSessionAsync(config, ct);
         try
         {
-            var findUrl = config.FindProductsUrl;
-            _logger.LogInformation("Navigating to {Url}", findUrl);
-            await session.Page.GotoAsync(findUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
-
-            // Wait for network to settle — Shopify admin shell loads first, then asynchronously
-            // mounts the dropshipper-ai iframe. DOMContentLoaded is too early.
-            try { await session.Page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
-            catch (TimeoutException) { /* admin shell is busy forever; keep going */ }
-
-            await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
-
-            // Locate the app frame (the iframe where the dropshipper-ai UI actually renders).
-            var appFrame = await WaitForAppFrameAsync(session.Page, config.AppUrl, ct);
+            // Mimic the user flow: go to the APP ROOT first (equivalent to clicking
+            // "Dropshipper.ai" from the Apps sidebar), let Shopify bootstrap the app-bridge
+            // context, THEN navigate to Find Products inside the iframe. Deep-linking
+            // straight to /app/find-products skips Shopify's session-token hydration.
+            var appFrame = await OpenAppThenNavigateAsync(session.Page, config, "find-products", ct);
             _logger.LogInformation("Operating on frame: {FrameUrl}", appFrame.Url);
 
             // Find the search input within that frame (with a single, bounded wait).
@@ -114,17 +106,7 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         await using var session = await OpenSessionAsync(config, ct);
         try
         {
-            var findUrl = config.FindProductsUrl;
-            if (!session.Page.Url.StartsWith(findUrl, StringComparison.OrdinalIgnoreCase))
-            {
-                await session.Page.GotoAsync(findUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-                try { await session.Page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
-                catch (TimeoutException) { }
-            }
-
-            await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
-
-            var appFrame = await WaitForAppFrameAsync(session.Page, config.AppUrl, ct);
+            var appFrame = await OpenAppThenNavigateAsync(session.Page, config, "find-products", ct);
 
             var card = await appFrame.QuerySelectorAsync($"[data-product-id='{externalId}']")
                      ?? await appFrame.QuerySelectorAsync($"[data-external-id='{externalId}']")
@@ -170,15 +152,7 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         await using var session = await OpenSessionAsync(config, ct);
         try
         {
-            var url = config.ImportListUrl;
-            _logger.LogInformation("Navigating to {Url}", url);
-            await session.Page.GotoAsync(url, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
-            try { await session.Page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
-            catch (TimeoutException) { }
-
-            await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
-
-            var appFrame = await WaitForAppFrameAsync(session.Page, config.AppUrl, ct);
+            var appFrame = await OpenAppThenNavigateAsync(session.Page, config, "import-list", ct);
 
             try
             {
@@ -209,14 +183,7 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         await using var session = await OpenSessionAsync(config, ct);
         try
         {
-            var url = config.ImportListUrl;
-            await session.Page.GotoAsync(url, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-            try { await session.Page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
-            catch (TimeoutException) { }
-
-            await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
-
-            var appFrame = await WaitForAppFrameAsync(session.Page, config.AppUrl, ct);
+            var appFrame = await OpenAppThenNavigateAsync(session.Page, config, "import-list", ct);
 
             var row = await appFrame.QuerySelectorAsync($"[data-import-item-id='{importItemId}']")
                     ?? await appFrame.QuerySelectorAsync($"[data-external-id='{importItemId}']")
@@ -364,7 +331,108 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         catch (Exception ex) { _logger.LogWarning(ex, "Auth diagnostics dump failed"); }
     }
 
-    // ── frame helpers ──
+    // ── navigation helpers ──
+
+    /// <summary>
+    /// Mimics the manual user flow: navigates to the app root (equivalent to clicking
+    /// "Dropshipper.ai" from the Shopify Apps sidebar), waits for the embedded iframe
+    /// to bootstrap, then navigates inside the iframe to the requested sub-page
+    /// ("find-products" or "import-list"). Returns the authenticated app frame.
+    ///
+    /// Going through the root is important because the app-bridge session token
+    /// hydration only happens when Shopify admin loads the app as an embedded
+    /// context — deep-linking straight to /app/find-products can skip it.
+    /// </summary>
+    private async Task<IFrame> OpenAppThenNavigateAsync(
+        IPage page, ShopifyAutomationConfig config, string subPage, CancellationToken ct)
+    {
+        // Derive the app root: strip /app/<anything> off the Find Products URL.
+        var findUrl = config.FindProductsUrl ?? "";
+        var appRoot = findUrl;
+        var appIdx = findUrl.IndexOf("/app/", StringComparison.OrdinalIgnoreCase);
+        if (appIdx > 0) appRoot = findUrl[..appIdx];
+
+        var targetSubUrl = subPage switch
+        {
+            "find-products" => config.FindProductsUrl,
+            "import-list" => config.ImportListUrl,
+            _ => findUrl,
+        };
+
+        // Only navigate to the app root if we're not already inside the app.
+        var currentUrl = page.Url ?? "";
+        if (!currentUrl.StartsWith(appRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation("Opening app root: {Url}", appRoot);
+            await page.GotoAsync(appRoot, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
+            try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
+            catch (TimeoutException) { /* admin shell never settles; proceed */ }
+
+            await EnsureAuthenticatedAsync(page, appRoot, ct);
+
+            // Give the admin shell a beat to mount the iframe.
+            await page.WaitForTimeoutAsync(1500);
+        }
+
+        // Get the app iframe (mounted now that the shell has loaded).
+        var appFrame = await WaitForAppFrameAsync(page, config.AppUrl, ct);
+
+        // Navigate inside the iframe to the sub-page. Two strategies:
+        // (a) click an in-app link if one exists (mimics user interaction);
+        // (b) if the app uses client-side routing, we can set the iframe's src directly.
+        // We try (a) first for a more natural interaction; fall back to direct navigation.
+        var subLinkClicked = await TryClickInAppLinkAsync(appFrame, subPage);
+        if (!subLinkClicked && !string.IsNullOrWhiteSpace(targetSubUrl))
+        {
+            _logger.LogInformation("In-app link not found, navigating page directly to {Url}", targetSubUrl);
+            await page.GotoAsync(targetSubUrl!, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
+            try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
+            catch (TimeoutException) { }
+            await EnsureAuthenticatedAsync(page, targetSubUrl, ct);
+            appFrame = await WaitForAppFrameAsync(page, config.AppUrl, ct);
+        }
+        else if (subLinkClicked)
+        {
+            _logger.LogInformation("Clicked in-app link for {SubPage}; waiting for content", subPage);
+            await page.WaitForTimeoutAsync(2000);
+        }
+
+        return appFrame;
+    }
+
+    /// <summary>
+    /// Looks for and clicks a navigation link inside the app frame that takes us to the
+    /// requested sub-page (Find Products / Import List). Returns true if it clicked
+    /// something; false if no matching link was found.
+    /// </summary>
+    private async Task<bool> TryClickInAppLinkAsync(IFrame appFrame, string subPage)
+    {
+        var needles = subPage switch
+        {
+            "find-products" => new[] { "Find products", "Find Product", "find-products" },
+            "import-list" => new[] { "Import list", "Import List", "import-list" },
+            _ => Array.Empty<string>(),
+        };
+
+        foreach (var needle in needles)
+        {
+            try
+            {
+                var link = await appFrame.QuerySelectorAsync(
+                    $"a:has-text('{needle}'), button:has-text('{needle}'), [href*='{needle}' i]");
+                if (link != null)
+                {
+                    _logger.LogInformation("Found in-app nav link matching '{Needle}'", needle);
+                    await link.ScrollIntoViewIfNeededAsync();
+                    try { await link.ClickAsync(new() { Timeout = 5000, Force = true }); }
+                    catch { await link.EvaluateAsync("el => el.click()"); }
+                    return true;
+                }
+            }
+            catch { /* try next selector */ }
+        }
+        return false;
+    }
 
     /// <summary>
     /// Polls for the iframe where the dropshipper-ai UI actually renders. Shopify admin
