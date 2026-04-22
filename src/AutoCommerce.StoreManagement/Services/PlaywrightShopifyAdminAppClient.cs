@@ -45,26 +45,48 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
             var findUrl = config.FindProductsUrl;
             _logger.LogInformation("Navigating to {Url}", findUrl);
             await session.Page.GotoAsync(findUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
-            await session.Page.WaitForTimeoutAsync(1500);
 
-            // ── AUTH GATE ──
+            // Wait for network to settle — Shopify admin shell loads first, then asynchronously
+            // mounts the dropshipper-ai iframe. DOMContentLoaded is too early.
+            try { await session.Page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
+            catch (TimeoutException) { /* admin shell is busy forever; keep going */ }
+
             await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
 
-            var searchBox = await session.Page.WaitForSelectorAsync(
-                SelectorList("input[type='search']",
-                             "input[placeholder*='Search' i]",
-                             "[role='searchbox']",
-                             "input[aria-label*='Search' i]"),
-                new() { Timeout = 20000 });
-            if (searchBox == null) throw new Exception("Search input not found on find-products page (authenticated, but the app shell didn't render the search)");
+            // Locate the app frame (the iframe where the dropshipper-ai UI actually renders).
+            var appFrame = await WaitForAppFrameAsync(session.Page, config.AppUrl, ct);
+            _logger.LogInformation("Operating on frame: {FrameUrl}", appFrame.Url);
 
-            await searchBox.FillAsync("");
+            // Find the search input within that frame (with a single, bounded wait).
+            var searchSelector = SelectorList(
+                "input[type='search']",
+                "input[placeholder*='Search' i]",
+                "[role='searchbox']",
+                "input[aria-label*='Search' i]");
+
+            IElementHandle? searchBox = null;
+            try
+            {
+                searchBox = await appFrame.WaitForSelectorAsync(searchSelector,
+                    new() { Timeout = 20000, State = WaitForSelectorState.Visible });
+            }
+            catch (TimeoutException)
+            {
+                await DumpFrameTreeAsync(session.Page, "search-not-found");
+                await CaptureAsync(session, "search-not-found", new Exception("Search input not found"));
+                throw new Exception(
+                    "Search input not found in app frame after 20s. " +
+                    "Check the screenshot at /tmp/autocommerce-automation/ — " +
+                    "the iframe may be using a different selector, or the app is stuck loading.");
+            }
+
+            await searchBox!.FillAsync("");
             await searchBox.FillAsync(query);
             await searchBox.PressAsync("Enter");
 
             try
             {
-                await session.Page.WaitForSelectorAsync(
+                await appFrame.WaitForSelectorAsync(
                     SelectorList("[data-product-id]",
                                  "[data-testid='product-card']",
                                  ".product-card",
@@ -74,7 +96,7 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
             catch (TimeoutException) { /* page may render differently; extract what's present */ }
 
             await session.Page.WaitForTimeoutAsync(1500);
-            return await ExtractSearchResultsAsync(session.Page);
+            return await ExtractSearchResultsAsync(appFrame);
         }
         catch (SessionExpiredException) { throw; }
         catch (Exception ex)
@@ -94,13 +116,19 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         {
             var findUrl = config.FindProductsUrl;
             if (!session.Page.Url.StartsWith(findUrl, StringComparison.OrdinalIgnoreCase))
+            {
                 await session.Page.GotoAsync(findUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+                try { await session.Page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
+                catch (TimeoutException) { }
+            }
 
             await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
 
-            var card = await session.Page.QuerySelectorAsync($"[data-product-id='{externalId}']")
-                     ?? await session.Page.QuerySelectorAsync($"[data-external-id='{externalId}']")
-                     ?? (await session.Page.QuerySelectorAllAsync("article,[data-testid='product-card'],.product-card")).FirstOrDefault();
+            var appFrame = await WaitForAppFrameAsync(session.Page, config.AppUrl, ct);
+
+            var card = await appFrame.QuerySelectorAsync($"[data-product-id='{externalId}']")
+                     ?? await appFrame.QuerySelectorAsync($"[data-external-id='{externalId}']")
+                     ?? (await appFrame.QuerySelectorAllAsync("article,[data-testid='product-card'],.product-card")).FirstOrDefault();
             if (card == null)
                 throw new Exception($"No product card found for externalId={externalId}");
 
@@ -111,11 +139,12 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
             if (addButton == null)
                 throw new Exception("'Add to import list' button not found on card");
 
+            await addButton.ScrollIntoViewIfNeededAsync();
             await addButton.ClickAsync(new() { Timeout = 15000 });
 
             try
             {
-                await session.Page.WaitForSelectorAsync(
+                await appFrame.WaitForSelectorAsync(
                     SelectorList(":has-text('Added to import list')",
                                  ":has-text('In import list')",
                                  "[data-import-status='added']"),
@@ -144,13 +173,16 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
             var url = config.ImportListUrl;
             _logger.LogInformation("Navigating to {Url}", url);
             await session.Page.GotoAsync(url, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
-            await session.Page.WaitForTimeoutAsync(1200);
+            try { await session.Page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
+            catch (TimeoutException) { }
 
             await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
 
+            var appFrame = await WaitForAppFrameAsync(session.Page, config.AppUrl, ct);
+
             try
             {
-                await session.Page.WaitForSelectorAsync(
+                await appFrame.WaitForSelectorAsync(
                     SelectorList("[data-import-item-id]",
                                  "[data-testid='import-list-row']",
                                  "table tbody tr",
@@ -159,7 +191,7 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
             }
             catch (TimeoutException) { /* empty list is valid */ }
 
-            return await ExtractImportListAsync(session.Page);
+            return await ExtractImportListAsync(appFrame);
         }
         catch (SessionExpiredException) { throw; }
         catch (Exception ex)
@@ -179,11 +211,16 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         {
             var url = config.ImportListUrl;
             await session.Page.GotoAsync(url, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+            try { await session.Page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 20000 }); }
+            catch (TimeoutException) { }
+
             await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
 
-            var row = await session.Page.QuerySelectorAsync($"[data-import-item-id='{importItemId}']")
-                    ?? await session.Page.QuerySelectorAsync($"[data-external-id='{importItemId}']")
-                    ?? (await session.Page.QuerySelectorAllAsync("[data-testid='import-list-row'],table tbody tr,article")).FirstOrDefault();
+            var appFrame = await WaitForAppFrameAsync(session.Page, config.AppUrl, ct);
+
+            var row = await appFrame.QuerySelectorAsync($"[data-import-item-id='{importItemId}']")
+                    ?? await appFrame.QuerySelectorAsync($"[data-external-id='{importItemId}']")
+                    ?? (await appFrame.QuerySelectorAllAsync("[data-testid='import-list-row'],table tbody tr,article")).FirstOrDefault();
             if (row == null)
                 return new AdminAppPushResult(false, null, $"Row not found for import item {importItemId}");
 
@@ -195,11 +232,12 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
             if (pushBtn == null)
                 return new AdminAppPushResult(false, null, "'Push to store' button not found");
 
+            await pushBtn.ScrollIntoViewIfNeededAsync();
             await pushBtn.ClickAsync(new() { Timeout = 15000 });
 
             try
             {
-                await session.Page.WaitForSelectorAsync(
+                await appFrame.WaitForSelectorAsync(
                     SelectorList(":has-text('Pushed to store')",
                                  ":has-text('Published')",
                                  ":has-text('Success')"),
@@ -257,6 +295,19 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
 
     private async Task<BrowserSession> OpenSessionAsync(ShopifyAutomationConfig config, CancellationToken ct)
     {
+        // Prefer reusing the manual-login browser (raw Chrome, no automation flags)
+        var manualPage = await _sessions.GetManualLoginPageAsync(ct);
+        if (manualPage != null)
+        {
+            _logger.LogInformation("Reusing manual-login Chrome browser for automation");
+            // Create a NEW page in the same context so we don't interfere with the login page
+            var newPage = await manualPage.Context.NewPageAsync();
+            newPage.SetDefaultTimeout(45000);
+            // ownsContext=false so we don't close the whole Chrome context on dispose
+            // but we do close this specific page
+            return new BrowserSession(manualPage.Context, newPage, ownsContext: false);
+        }
+
         await EnsureBrowserAsync(config, ct);
         var context = await _sessions.OpenAuthenticatedContextAsync(_browser!, ct);
         var page = await context.NewPageAsync();
@@ -313,11 +364,77 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         catch (Exception ex) { _logger.LogWarning(ex, "Auth diagnostics dump failed"); }
     }
 
+    // ── frame helpers ──
+
+    /// <summary>
+    /// Polls for the iframe where the dropshipper-ai UI actually renders. Shopify admin
+    /// nests the app inside <c>&lt;iframe src=&quot;https://app.dropshiping.ai/...&quot;&gt;</c>
+    /// and only mounts it after the admin shell finishes loading — we can't assume it's
+    /// present at navigation time.
+    /// </summary>
+    private async Task<IFrame> WaitForAppFrameAsync(IPage page, string? appUrlHint, CancellationToken ct)
+    {
+        var hints = new List<string> { "dropshiping.ai", "dropshipper-ai" };
+        if (!string.IsNullOrWhiteSpace(appUrlHint))
+        {
+            try { hints.Insert(0, new Uri(appUrlHint).Host); } catch { /* invalid URL; hints list already has fallbacks */ }
+        }
+
+        var deadline = DateTime.UtcNow.AddSeconds(25);
+        IFrame? best = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            foreach (var f in page.Frames)
+            {
+                if (f == page.MainFrame) continue;
+                var url = f.Url ?? "";
+                if (hints.Any(h => url.Contains(h, StringComparison.OrdinalIgnoreCase)))
+                {
+                    // Found the app iframe — wait for it to actually finish loading.
+                    try { await f.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new() { Timeout = 10000 }); }
+                    catch (TimeoutException) { /* continue anyway */ }
+                    _logger.LogInformation("App frame detected: {Url}", url);
+                    return f;
+                }
+                // Track any non-main frame as a fallback.
+                if (best == null) best = f;
+            }
+            await Task.Delay(500, ct);
+        }
+
+        if (best != null)
+        {
+            _logger.LogWarning("No frame matched app hints {Hints}; falling back to first subframe {Url}",
+                string.Join(",", hints), best.Url);
+            return best;
+        }
+
+        // No iframes at all — operate on the main frame. This happens when the app
+        // renders top-level (not embedded).
+        _logger.LogInformation("No subframes found — using main frame");
+        return page.MainFrame;
+    }
+
+    private async Task DumpFrameTreeAsync(IPage page, string label)
+    {
+        try
+        {
+            var lines = new List<string> { $"[{label}] top={page.Url} title={await page.TitleAsync()}" };
+            foreach (var f in page.Frames)
+            {
+                var kind = f == page.MainFrame ? "main" : "frame";
+                lines.Add($"  {kind}: {f.Url} (name={f.Name})");
+            }
+            _logger.LogWarning("Frame tree:\n{Tree}", string.Join("\n", lines));
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "DumpFrameTreeAsync failed"); }
+    }
+
     // ── extraction helpers ──
 
-    private static async Task<IReadOnlyList<AdminAppSearchCandidate>> ExtractSearchResultsAsync(IPage page)
+    private static async Task<IReadOnlyList<AdminAppSearchCandidate>> ExtractSearchResultsAsync(IFrame frame)
     {
-        var json = await page.EvaluateAsync<string>(@"() => {
+        var json = await frame.EvaluateAsync<string>(@"() => {
           const cards = Array.from(document.querySelectorAll(
             '[data-product-id], [data-testid=""product-card""], article, .product-card'));
           const seen = new Set();
@@ -361,9 +478,9 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         return list;
     }
 
-    private static async Task<IReadOnlyList<AdminAppImportListItem>> ExtractImportListAsync(IPage page)
+    private static async Task<IReadOnlyList<AdminAppImportListItem>> ExtractImportListAsync(IFrame frame)
     {
-        var json = await page.EvaluateAsync<string>(@"() => {
+        var json = await frame.EvaluateAsync<string>(@"() => {
           const rows = Array.from(document.querySelectorAll(
             '[data-import-item-id], [data-testid=""import-list-row""], table tbody tr, article'));
           const out = [];
@@ -408,7 +525,17 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
     {
         public IBrowserContext Context { get; }
         public IPage Page { get; }
-        public BrowserSession(IBrowserContext ctx, IPage page) { Context = ctx; Page = page; }
-        public async ValueTask DisposeAsync() => await Context.DisposeAsync();
+        private readonly bool _ownsContext;
+        public BrowserSession(IBrowserContext ctx, IPage page, bool ownsContext = true)
+        {
+            Context = ctx; Page = page; _ownsContext = ownsContext;
+        }
+        public async ValueTask DisposeAsync()
+        {
+            if (_ownsContext)
+                await Context.DisposeAsync();
+            else
+                try { await Page.CloseAsync(); } catch { /* page may already be closed */ }
+        }
     }
 }

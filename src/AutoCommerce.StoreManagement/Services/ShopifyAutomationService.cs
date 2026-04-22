@@ -22,7 +22,9 @@ public record AutomationConfigDto(
     bool HeadlessMode,
     bool UseApiFirst,
     string? SessionCookie,
-    string? AuthToken);
+    string? AuthToken,
+    string? ShopifyEmail,
+    bool HasShopifyPassword);
 
 public record AutomationConfigUpdateDto(
     string? ShopifyStoreUrl,
@@ -38,7 +40,9 @@ public record AutomationConfigUpdateDto(
     bool? HeadlessMode,
     bool? UseApiFirst,
     string? SessionCookie,
-    string? AuthToken);
+    string? AuthToken,
+    string? ShopifyEmail,
+    string? ShopifyPassword);
 
 public record AutomationRunDto(
     Guid Id,
@@ -142,6 +146,7 @@ public class ShopifyAutomationService : IShopifyAutomationService
             {
                 ShopifyStoreUrl = "https://admin.shopify.com/store/jiydad-cj",
                 AppUrl = "https://app.dropshiping.ai",
+                MaxRetries = 0, // 1 attempt, no retry — surface real failures fast
                 ShopifyApiKey = "36a86a25ff0c6d4958653adb9ba54e11",
                 ShopifyHost = "YWRtaW4uc2hvcGlmeS5jb20vc3RvcmUvaml5ZGFkLWNq",
                 DefaultSearch = "Dog Grooming Glove",
@@ -177,6 +182,8 @@ public class ShopifyAutomationService : IShopifyAutomationService
         if (update.UseApiFirst.HasValue) cfg.UseApiFirst = update.UseApiFirst.Value;
         if (update.SessionCookie != null) cfg.SessionCookie = update.SessionCookie;
         if (update.AuthToken != null) cfg.AuthToken = update.AuthToken;
+        if (update.ShopifyEmail != null) cfg.ShopifyEmail = update.ShopifyEmail;
+        if (update.ShopifyPassword != null) cfg.ShopifyPassword = update.ShopifyPassword;
         cfg.UpdatedAt = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(ct);
@@ -867,7 +874,9 @@ public class ShopifyAutomationService : IShopifyAutomationService
         c.AuthMode, c.MaxRetries,
         c.MatchConfidenceThreshold, c.HeadlessMode, c.UseApiFirst,
         c.SessionCookie != null ? "***" : null,
-        c.AuthToken != null ? "***" : null);
+        c.AuthToken != null ? "***" : null,
+        c.ShopifyEmail,
+        !string.IsNullOrEmpty(c.ShopifyPassword));
 
     private static AutomationRunDto MapRun(ShopifyAutomationRun r) => new(
         r.Id, r.Status, r.TotalProducts, r.ProcessedCount,

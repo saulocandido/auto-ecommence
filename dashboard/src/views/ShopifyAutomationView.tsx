@@ -28,7 +28,19 @@ export function ShopifyAutomationView() {
   const [showLoginWizard, setShowLoginWizard] = useState(false);
   const [loginStep, setLoginStep] = useState<1 | 2 | 3>(1);
   const [uploadStateJson, setUploadStateJson] = useState("");
+  const [showCredentialLogin, setShowCredentialLogin] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [saveCredentials, setSaveCredentials] = useState(true);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [needsVerification, setNeedsVerification] = useState(false);
+  const [manualLoginActive, setManualLoginActive] = useState(false);
+  const manualLoginPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Console script that captures all JS-visible cookies + localStorage + sessionStorage,
+  // and warns if auth cookies are missing (HttpOnly).
+  const consoleScript = `(async()=>{const cs=await cookieStore.getAll();const dc=document.cookie.split(';').map(c=>{const[n,...v]=c.trim().split('=');return{name:n,value:v.join('=')}}).filter(c=>c.name);const seen=new Set(cs.map(c=>c.name));dc.forEach(c=>{if(!seen.has(c.name)){cs.push({name:c.name,value:c.value,domain:location.hostname,path:'/',secure:location.protocol==='https:',httpOnly:false});seen.add(c.name)}});const ls=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);ls.push({name:k,value:localStorage.getItem(k)})}const ss=[];for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);ss.push({name:k,value:sessionStorage.getItem(k)})}const auth=['_secure_admin_session_id','_master_udr','shopify_user_t','koa.sid'];const found=cs.filter(c=>auth.some(a=>c.name.startsWith(a)));const missing=auth.filter(a=>!cs.some(c=>c.name.startsWith(a)));const result={cookies:cs.map(c=>({name:c.name,value:c.value,domain:c.domain||location.hostname,path:c.path||'/',secure:c.secure??true,httpOnly:false})),origins:[{origin:location.origin,localStorage:ls}],sessionStorageByOrigin:{[location.origin]:ss}};console.log('%c AUTH COOKIES FOUND: '+found.length+'/'+auth.length,'color:'+(found.length>0?'green':'red')+';font-weight:bold;font-size:14px');if(missing.length>0)console.warn('Missing (HttpOnly): '+missing.join(', ')+'\\n→ Use Cookie-Editor extension!');console.log(JSON.stringify(result,null,2));if(found.length===0)console.log('%c This output has NO auth cookies. Use Cookie-Editor extension!','color:red;font-size:16px;font-weight:bold')})()`;
 
   // Load config + active run + session status on mount
   useEffect(() => {
@@ -146,6 +158,91 @@ export function ShopifyAutomationView() {
       setError(`Validate failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally { setSessionBusy(null); }
   };
+
+  const handleCredentialLogin = async () => {
+    setSessionBusy("connect"); setError(null); setMessage(null);
+    try {
+      // Save credentials if checkbox is checked
+      if (saveCredentials && loginPassword !== "__saved__") {
+        await api.automationConfigPut({ shopifyEmail: loginEmail, shopifyPassword: loginPassword });
+        // Refresh config so hasShopifyPassword is updated
+        const newCfg = await api.automationConfigGet();
+        setCfg(newCfg);
+      }
+      const s = await api.automationSessionLogin(loginEmail, loginPassword);
+      setSession(s);
+      if (s.state === "connected") {
+        setShowCredentialLogin(false); setLoginPassword("");
+        setNeedsVerification(false);
+        setMessage("✅ " + (s.message || "Logged in successfully!"));
+      } else if (s.state === "verification_required") {
+        setNeedsVerification(true);
+        setMessage("📧 " + (s.message || "Check your email for a verification code"));
+      } else {
+        setError(s.message || "Login did not succeed");
+      }
+    } catch (e) { setError(`Login failed: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { setSessionBusy(null); }
+  };
+
+  const handleVerifyCode = async () => {
+    setSessionBusy("connect"); setError(null); setMessage(null);
+    try {
+      const s = await api.automationSessionVerify(verificationCode);
+      setSession(s);
+      if (s.state === "connected") {
+        setShowCredentialLogin(false); setLoginPassword("");
+        setNeedsVerification(false); setVerificationCode("");
+        setMessage("✅ " + (s.message || "Verified and logged in!"));
+      } else if (s.state === "verification_required") {
+        setError(s.message || "Code may be wrong — try again");
+      } else {
+        setError(s.message || "Verification did not succeed");
+      }
+    } catch (e) { setError(`Verify failed: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { setSessionBusy(null); }
+  };
+
+  const handleManualLogin = async () => {
+    setSessionBusy("connect"); setError(null); setMessage(null);
+    try {
+      const s = await api.automationManualLoginStart();
+      setSession(s);
+      if (s.state === "manual_login_started") {
+        setManualLoginActive(true);
+        setMessage("🖥️ Browser opened! Log in to Shopify in the viewer below.");
+        // Start polling every 3s to detect when user finishes login
+        if (manualLoginPollRef.current) clearInterval(manualLoginPollRef.current);
+        manualLoginPollRef.current = setInterval(async () => {
+          try {
+            const poll = await api.automationManualLoginPoll();
+            setSession(poll);
+            if (poll.state === "connected") {
+              // User logged in!
+              if (manualLoginPollRef.current) clearInterval(manualLoginPollRef.current);
+              setManualLoginActive(false);
+              setMessage("✅ " + (poll.message || "Logged in successfully!"));
+            }
+          } catch { /* ignore poll errors */ }
+        }, 3000);
+      } else {
+        setError(s.message || "Could not start manual login");
+      }
+    } catch (e) { setError(`Manual login failed: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { setSessionBusy(null); }
+  };
+
+  const stopManualLogin = async () => {
+    if (manualLoginPollRef.current) clearInterval(manualLoginPollRef.current);
+    try { await api.automationManualLoginStop(); } catch { }
+    setManualLoginActive(false);
+    setMessage(null);
+  };
+
+  // Cleanup manual login poll on unmount
+  useEffect(() => {
+    return () => { if (manualLoginPollRef.current) clearInterval(manualLoginPollRef.current); };
+  }, []);
 
   const uploadSession = async () => {
     setSessionBusy("upload"); setError(null); setMessage(null);
@@ -352,6 +449,11 @@ export function ShopifyAutomationView() {
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2 mt-3">
+          <button onClick={handleManualLogin}
+            disabled={sessionBusy !== null || manualLoginActive}
+            className="px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded hover:bg-green-700 disabled:opacity-50">
+            🖥️ Quick Login (Browser)
+          </button>
           <button onClick={() => { setShowLoginWizard(true); setLoginStep(1); }}
             disabled={sessionBusy !== null}
             className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-medium rounded hover:bg-indigo-700 disabled:opacity-50">
@@ -361,11 +463,43 @@ export function ShopifyAutomationView() {
             className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded hover:bg-emerald-700 disabled:opacity-50">
             {sessionBusy === "validate" ? "Checking…" : "✓ Test Session"}
           </button>
+          <button onClick={() => {
+            setShowCredentialLogin(true);
+            if (cfg?.shopifyEmail) setLoginEmail(cfg.shopifyEmail);
+            if (cfg?.hasShopifyPassword) setLoginPassword("__saved__");
+          }} disabled={sessionBusy !== null}
+            className="px-3 py-1.5 bg-amber-600 text-white text-xs font-medium rounded hover:bg-amber-700 disabled:opacity-50">
+            🔐 Login with Email & Password
+          </button>
           <button onClick={() => setShowUploadModal(true)} disabled={sessionBusy !== null}
             className="px-3 py-1.5 bg-white border border-slate-300 text-slate-700 text-xs font-medium rounded hover:bg-slate-50 disabled:opacity-50">
             📋 Paste Cookies Directly
           </button>
         </div>
+
+        {/* ── noVNC browser viewer for manual login ── */}
+        {manualLoginActive && (
+          <div className="mt-4 border border-green-300 rounded-lg overflow-hidden">
+            <div className="bg-green-50 px-4 py-2 flex items-center justify-between">
+              <div>
+                <span className="font-semibold text-green-800 text-sm">🖥️ Browser Login</span>
+                <span className="text-xs text-green-600 ml-2">Log in to Shopify below — the system will detect when you're done</span>
+              </div>
+              <button onClick={stopManualLogin}
+                className="px-3 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600">
+                ✕ Close Browser
+              </button>
+            </div>
+            <div className="relative bg-black" style={{ height: "650px" }}>
+              <iframe
+                src="http://localhost:6080/vnc_lite.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=2000"
+                className="w-full h-full border-0"
+                title="Shopify Login Browser"
+                allow="clipboard-read; clipboard-write"
+              />
+            </div>
+          </div>
+        )}
         <div className="mt-3 p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-slate-700 space-y-1.5">
           <div className="font-semibold text-indigo-800">🎯 Recommended: one-command capture (takes ~30s)</div>
           <div>
@@ -393,6 +527,105 @@ node capture-shopify-session.mjs http://localhost:5110`}
           <strong> Paste Cookies Directly</strong> (advanced — must include admin.shopify.com cookies).
         </p>
       </Card>
+
+      {/* ── Credential Login modal ── */}
+      {showCredentialLogin && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
+             onClick={() => !sessionBusy && setShowCredentialLogin(false)}>
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-[480px] max-w-[95vw]"
+               onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-bold mb-1">🔐 Login with Shopify Credentials</h3>
+
+            {!needsVerification ? (
+              <>
+                <p className="text-xs text-slate-500 mb-4">
+                  Enter your Shopify email and password. The server will log in automatically.
+                  If Shopify asks for a verification code, you'll be prompted to enter it.
+                </p>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Shopify Email</label>
+                    <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)}
+                      placeholder="you@example.com" disabled={sessionBusy !== null}
+                      className="w-full border border-slate-300 rounded px-3 py-2 text-sm disabled:bg-slate-50" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Shopify Password</label>
+                    <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)}
+                      placeholder="••••••••" disabled={sessionBusy !== null}
+                      className="w-full border border-slate-300 rounded px-3 py-2 text-sm disabled:bg-slate-50"
+                      onKeyDown={e => { if (e.key === 'Enter' && loginEmail && loginPassword && !sessionBusy) {
+                        handleCredentialLogin();
+                      }}}
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 mt-3">
+                  <input type="checkbox" id="saveCredentials" checked={saveCredentials}
+                    onChange={e => setSaveCredentials(e.target.checked)}
+                    className="rounded border-slate-300" />
+                  <label htmlFor="saveCredentials" className="text-xs text-slate-600">Save login for next time</label>
+                </div>
+                <div className="flex justify-end gap-2 mt-4">
+                  <button onClick={() => { setShowCredentialLogin(false); setLoginEmail(""); setLoginPassword(""); setNeedsVerification(false); }}
+                    disabled={sessionBusy !== null}
+                    className="px-3 py-1.5 text-sm rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50">
+                    Cancel
+                  </button>
+                  <button
+                    disabled={sessionBusy !== null || !loginEmail.trim() || !loginPassword.trim()}
+                    onClick={handleCredentialLogin}
+                    className="px-4 py-2 bg-amber-600 text-white text-sm font-medium rounded-lg hover:bg-amber-700 disabled:opacity-50">
+                    {sessionBusy === "connect" ? "Logging in… (up to 30s)" : "🔐 Login"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-700">
+                  <strong>📧 Verification code required!</strong><br />
+                  Shopify sent a verification code to your email or phone.
+                  Check your inbox and enter the code below.
+                </div>
+                {session?.message && (
+                  <p className="text-xs text-slate-500 italic mb-3">{session.message}</p>
+                )}
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Verification Code</label>
+                  <input type="text" value={verificationCode} onChange={e => setVerificationCode(e.target.value)}
+                    placeholder="Enter 6-digit code" autoFocus disabled={sessionBusy !== null}
+                    className="w-full border border-slate-300 rounded px-3 py-2 text-sm text-center text-lg tracking-widest font-mono disabled:bg-slate-50"
+                    maxLength={10}
+                    onKeyDown={e => { if (e.key === 'Enter' && verificationCode.trim() && !sessionBusy) {
+                      handleVerifyCode();
+                    }}}
+                  />
+                </div>
+                <div className="flex justify-between items-center mt-5">
+                  <button onClick={() => { setNeedsVerification(false); setVerificationCode(""); }}
+                    disabled={sessionBusy !== null}
+                    className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 disabled:opacity-50">
+                    ← Back to login
+                  </button>
+                  <div className="flex gap-2">
+                    <button onClick={() => { setShowCredentialLogin(false); setLoginEmail(""); setLoginPassword(""); setNeedsVerification(false); setVerificationCode(""); }}
+                      disabled={sessionBusy !== null}
+                      className="px-3 py-1.5 text-sm rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50">
+                      Cancel
+                    </button>
+                    <button
+                      disabled={sessionBusy !== null || !verificationCode.trim()}
+                      onClick={handleVerifyCode}
+                      className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                      {sessionBusy === "connect" ? "Verifying…" : "✓ Verify"}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Login Wizard modal ── */}
       {showLoginWizard && (
@@ -460,8 +693,12 @@ node capture-shopify-session.mjs http://localhost:5110`}
 
                   <div className="space-y-3">
                     <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-1">
-                      <p className="text-xs font-bold text-red-700">⚠️ Important: <code>document.cookie</code> cannot see HttpOnly auth cookies.</p>
-                      <p className="text-[11px] text-red-600">Use Method A (Cookie-Editor extension) or Method B (DevTools Application tab) to get ALL cookies including the auth ones.</p>
+                      <p className="text-xs font-bold text-red-700">⚠️ Why <code>document.cookie</code> / <code>cookieStore</code> won't work:</p>
+                      <p className="text-[11px] text-red-600">
+                        Shopify's real auth cookies (<code>_secure_admin_session_id_*</code>, <code>_master_udr</code>,
+                        <code>shopify_user_t</code>) are <strong>HttpOnly</strong> — JavaScript cannot read them.
+                        The 3 cookies from <code>cookieStore.getAll()</code> are just analytics trackers and are useless for auth.
+                      </p>
                     </div>
 
                     {/* Method A: Extension (BEST) */}
@@ -469,45 +706,62 @@ node capture-shopify-session.mjs http://localhost:5110`}
                       <p className="text-xs font-bold text-slate-700 mb-1">✅ Method A — Cookie-Editor Extension (recommended)</p>
                       <ol className="text-xs text-slate-600 space-y-1 list-decimal list-inside mb-2">
                         <li>Install <a href="https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm" target="_blank" rel="noopener" className="text-indigo-600 underline font-semibold">Cookie-Editor</a> from the Chrome Web Store</li>
-                        <li>Go to your Shopify / dropshipping app tab (make sure you're logged in)</li>
+                        <li>Navigate to <strong>admin.shopify.com</strong> (make sure you're logged in to your store)</li>
                         <li>Click the Cookie-Editor icon in the toolbar</li>
-                        <li>Click <strong>Export → JSON</strong> (copies to clipboard)</li>
+                        <li>Click <strong>Export → JSON</strong> (copies ALL cookies including HttpOnly to clipboard)</li>
                         <li>Come back here and paste in Step 3</li>
                       </ol>
-                      <p className="text-[10px] text-green-700 font-medium">This captures ALL cookies including HttpOnly auth cookies ✓</p>
+                      <p className="text-[10px] text-green-700 font-medium">✓ Captures ALL cookies including HttpOnly auth cookies that JavaScript can't see</p>
                     </div>
 
-                    {/* Method B: DevTools Application tab */}
+                    {/* Method B: Playwright codegen */}
                     <div className="bg-white rounded border border-amber-200 p-3">
-                      <p className="text-xs font-bold text-slate-700 mb-1">Method B — DevTools Application Tab</p>
-                      <ol className="text-xs text-slate-600 space-y-1 list-decimal list-inside">
-                        <li>On the Shopify tab, press <kbd className="bg-slate-100 px-1 rounded font-mono">F12</kbd> to open DevTools</li>
-                        <li>Go to <strong>Application</strong> → <strong>Cookies</strong> in the left panel</li>
-                        <li>Go to <strong>Console</strong> tab and paste this to extract all visible cookies:</li>
-                      </ol>
-                      <div className="mt-1 relative">
+                      <p className="text-xs font-bold text-slate-700 mb-1">Method B — Playwright Codegen (alternative)</p>
+                      <p className="text-xs text-slate-600 mb-1">Run this in your terminal (requires Node.js):</p>
+                      <div className="relative">
                         <code className="block bg-slate-900 text-green-400 p-2 rounded text-[11px] font-mono break-all">
-                          {`(async()=>{const cs=await cookieStore.getAll();console.log(JSON.stringify({cookies:cs.map(c=>({name:c.name,value:c.value,domain:c.domain||location.hostname,path:c.path||'/',secure:c.secure,httpOnly:false})),origins:[]},null,2))})()`}
+                          npx playwright codegen --save-storage=session.json https://admin.shopify.com
                         </code>
                         <button onClick={() => {
-                          navigator.clipboard.writeText(`(async()=>{const cs=await cookieStore.getAll();console.log(JSON.stringify({cookies:cs.map(c=>({name:c.name,value:c.value,domain:c.domain||location.hostname,path:c.path||'/',secure:c.secure,httpOnly:false})),origins:[]},null,2))})()`);
-                          setMessage("Console command copied!");
+                          navigator.clipboard.writeText("npx playwright codegen --save-storage=session.json https://admin.shopify.com");
+                          setMessage("Command copied!");
                           setTimeout(() => setMessage(null), 2000);
                         }}
                           className="absolute top-1 right-1 px-2 py-0.5 bg-slate-700 text-white text-[10px] rounded hover:bg-slate-600">
                           Copy
                         </button>
                       </div>
-                      <p className="text-[10px] text-slate-400 mt-1">⚠️ cookieStore API may still miss some HttpOnly cookies — Method A is more reliable</p>
+                      <ol className="text-xs text-slate-600 space-y-0.5 list-decimal list-inside mt-1">
+                        <li>A browser window opens — log in to Shopify normally</li>
+                        <li>Navigate to your dropshipping app's <strong>Find Products</strong> page</li>
+                        <li>Close the Playwright Inspector window (not the browser)</li>
+                        <li>Open <code className="bg-slate-100 px-1 rounded">session.json</code> — copy its contents and paste in Step 3</li>
+                      </ol>
+                      <p className="text-[10px] text-green-700 font-medium mt-1">✓ Captures full storage state with all cookies, localStorage & sessionStorage</p>
                     </div>
 
-                    {/* Method C: Bookmarklet (limited) */}
-                    <div className="bg-white rounded border border-slate-200 p-3 opacity-70">
-                      <p className="text-xs font-bold text-slate-500 mb-1">Method C — Console document.cookie (limited)</p>
-                      <p className="text-xs text-slate-500">
-                        <code>document.cookie</code> only sees non-HttpOnly cookies — usually just analytics trackers.
-                        Only use this if Methods A/B aren't available.
-                      </p>
+                    {/* Method C: Console script (captures everything JS can see + warns about missing) */}
+                    <div className="bg-white rounded border border-amber-200 p-3">
+                      <p className="text-xs font-bold text-slate-700 mb-1">Method C — Console Script (partial — warns about missing auth cookies)</p>
+                      <ol className="text-xs text-slate-600 space-y-0.5 list-decimal list-inside">
+                        <li>On <strong>admin.shopify.com</strong>, press <kbd className="bg-slate-100 px-1 rounded font-mono">F12</kbd> → <strong>Console</strong></li>
+                        <li>Paste this script — it captures all JS-visible cookies + localStorage + sessionStorage:</li>
+                      </ol>
+                      <div className="mt-1 relative">
+                        <code className="block bg-slate-900 text-green-400 p-2 rounded text-[10px] font-mono break-all max-h-20 overflow-auto">
+                          {consoleScript}
+                        </code>
+                        <button onClick={() => {
+                          navigator.clipboard.writeText(consoleScript);
+                          setMessage("Console script copied!");
+                          setTimeout(() => setMessage(null), 2000);
+                        }}
+                          className="absolute top-1 right-1 px-2 py-0.5 bg-slate-700 text-white text-[10px] rounded hover:bg-slate-600">
+                          Copy
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-amber-600 font-medium mt-1">⚠️ Will warn in console if auth cookies are missing (HttpOnly). If so, use Method A instead.</p>
+                      <p className="text-[10px] text-slate-400">Copy the JSON output from the console and paste it in Step 3.</p>
                     </div>
                   </div>
                 </div>

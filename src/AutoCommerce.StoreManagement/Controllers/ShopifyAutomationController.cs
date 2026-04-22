@@ -63,6 +63,98 @@ public class ShopifyAutomationController : ControllerBase
         return Ok(await _sessions.StartInteractiveLoginAsync(cfg, ct));
     }
 
+    public record CredentialLoginDto(string Email, string Password);
+
+    [HttpPost("session/login")]
+    public async Task<IActionResult> LoginWithCredentials([FromBody] CredentialLoginDto body, CancellationToken ct)
+    {
+        if (_sessions == null) return StatusCode(503, new { error = "Session manager not available" });
+        if (body == null || string.IsNullOrWhiteSpace(body.Email))
+            return BadRequest(new { error = "Email is required" });
+        var cfg = await LoadConfigDomainAsync(ct);
+        if (cfg == null) return BadRequest(new { error = "Automation config not initialised" });
+
+        // Use saved password if frontend sends placeholder
+        var email = body.Email;
+        var password = body.Password;
+        if (password == "__saved__")
+        {
+            if (string.IsNullOrWhiteSpace(cfg.ShopifyPassword))
+                return BadRequest(new { error = "No saved password found. Please enter your password." });
+            password = cfg.ShopifyPassword;
+            if (string.IsNullOrWhiteSpace(email) || email == cfg.ShopifyEmail)
+                email = cfg.ShopifyEmail ?? email;
+        }
+        if (string.IsNullOrWhiteSpace(password))
+            return BadRequest(new { error = "Password is required" });
+
+        return Ok(await _sessions.LoginWithCredentialsAsync(email!, password, cfg, ct));
+    }
+
+    public record VerificationCodeDto(string Code);
+
+    [HttpPost("session/login/verify")]
+    public async Task<IActionResult> SubmitVerificationCode([FromBody] VerificationCodeDto body, CancellationToken ct)
+    {
+        if (_sessions == null) return StatusCode(503, new { error = "Session manager not available" });
+        if (body == null || string.IsNullOrWhiteSpace(body.Code))
+            return BadRequest(new { error = "Verification code is required" });
+        var cfg = await LoadConfigDomainAsync(ct);
+        if (cfg == null) return BadRequest(new { error = "Automation config not initialised" });
+        return Ok(await _sessions.SubmitVerificationCodeAsync(body.Code, cfg, ct));
+    }
+
+    [HttpGet("session/debug/screenshot")]
+    public IActionResult GetDebugScreenshot()
+    {
+        if (_sessions == null) return StatusCode(503);
+        var debugDir = Path.Combine(Path.GetDirectoryName(_sessions.StorageStatePath)!, "debug");
+        if (!Directory.Exists(debugDir)) return NotFound(new { error = "No debug screenshots" });
+        var files = Directory.GetFiles(debugDir, "*.png").OrderByDescending(f => f).ToArray();
+        if (files.Length == 0) return NotFound(new { error = "No screenshots found" });
+        var latest = files[0];
+        return PhysicalFile(latest, "image/png", Path.GetFileName(latest));
+    }
+
+    [HttpGet("session/debug/screenshots")]
+    public IActionResult ListDebugScreenshots()
+    {
+        if (_sessions == null) return StatusCode(503);
+        var debugDir = Path.Combine(Path.GetDirectoryName(_sessions.StorageStatePath)!, "debug");
+        if (!Directory.Exists(debugDir)) return Ok(Array.Empty<string>());
+        var files = Directory.GetFiles(debugDir, "*.png").OrderByDescending(f => f)
+            .Select(Path.GetFileName).ToArray();
+        return Ok(files);
+    }
+
+    // ── Manual browser login (noVNC) ──
+
+    [HttpPost("session/manual-login")]
+    public async Task<IActionResult> StartManualLogin(CancellationToken ct)
+    {
+        if (_sessions == null) return StatusCode(503, new { error = "Session manager not available" });
+        var cfg = await LoadConfigDomainAsync(ct);
+        if (cfg == null) return BadRequest(new { error = "Automation config not initialised" });
+        return Ok(await _sessions.StartManualBrowserLoginAsync(cfg, ct));
+    }
+
+    [HttpGet("session/manual-login/poll")]
+    public async Task<IActionResult> PollManualLogin(CancellationToken ct)
+    {
+        if (_sessions == null) return StatusCode(503, new { error = "Session manager not available" });
+        var cfg = await LoadConfigDomainAsync(ct);
+        if (cfg == null) return BadRequest(new { error = "Automation config not initialised" });
+        return Ok(await _sessions.PollManualLoginAsync(cfg, ct));
+    }
+
+    [HttpPost("session/manual-login/stop")]
+    public async Task<IActionResult> StopManualLogin(CancellationToken ct)
+    {
+        if (_sessions == null) return StatusCode(503, new { error = "Session manager not available" });
+        await _sessions.StopManualLoginAsync();
+        return Ok(new { status = "stopped" });
+    }
+
     public record SessionImportDto(string StorageState);
 
     [HttpPost("session/upload")]

@@ -17,4 +17,14 @@ COPY --from=publish /app/publish .
 # Playwright browsers live at /ms-playwright in this image; tell .NET about it.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV DOTNET_RUNNING_IN_CONTAINER=true
-ENTRYPOINT ["dotnet", "AutoCommerce.StoreManagement.dll"]
+
+# Install Xvfb + x11vnc + noVNC for manual browser login via web viewer
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb x11vnc novnc websockify \
+    && rm -rf /var/lib/apt/lists/*
+
+# Start Xvfb on :99 before the app
+ENV DISPLAY=:99
+# noVNC will be started on-demand by the app on port 6080
+EXPOSE 8080 6080
+ENTRYPOINT ["bash", "-c", "Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &>/dev/null & sleep 0.5 && exec dotnet AutoCommerce.StoreManagement.dll"]

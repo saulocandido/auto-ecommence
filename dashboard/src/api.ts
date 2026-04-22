@@ -385,7 +385,7 @@ export type ShopifyAdminConfigUpdate = Partial<{
 // ── Shopify Automation types ──
 
 export type AutomationSessionStatusDto = {
-  state: "connected" | "login_required" | "unknown" | "error";
+  state: "connected" | "login_required" | "unknown" | "error" | "verification_required" | "manual_login_started" | "manual_login_waiting" | "no_manual_login";
   lastValidatedAt: string | null;
   lastLoggedInAt: string | null;
   storageStateExists: boolean;
@@ -407,6 +407,8 @@ export type AutomationConfigDto = {
   useApiFirst: boolean;
   sessionCookie?: string | null;
   authToken?: string | null;
+  shopifyEmail?: string | null;
+  hasShopifyPassword?: boolean;
 };
 
 export type AutomationConfigUpdateDto = Partial<{
@@ -424,6 +426,8 @@ export type AutomationConfigUpdateDto = Partial<{
   useApiFirst: boolean;
   sessionCookie: string;
   authToken: string;
+  shopifyEmail: string;
+  shopifyPassword: string;
 }>;
 
 export type AutomationRunDto = {
@@ -589,10 +593,24 @@ export const api = {
     store<AutomationSessionStatusDto>("/api/shopify/automation/session/validate", { method: "POST" }),
   automationSessionConnect: () =>
     store<AutomationSessionStatusDto>("/api/shopify/automation/session/connect", { method: "POST" }),
+  automationSessionLogin: (email: string, password: string) =>
+    store<AutomationSessionStatusDto>("/api/shopify/automation/session/login", {
+      method: "POST", body: JSON.stringify({ email, password })
+    }),
+  automationSessionVerify: (code: string) =>
+    store<AutomationSessionStatusDto>("/api/shopify/automation/session/login/verify", {
+      method: "POST", body: JSON.stringify({ code })
+    }),
   automationSessionUpload: (storageState: string) =>
     store<AutomationSessionStatusDto>("/api/shopify/automation/session/upload", {
       method: "POST", body: JSON.stringify({ storageState })
     }),
+  automationManualLoginStart: () =>
+    store<AutomationSessionStatusDto>("/api/shopify/automation/session/manual-login", { method: "POST" }),
+  automationManualLoginPoll: () =>
+    store<AutomationSessionStatusDto>("/api/shopify/automation/session/manual-login/poll"),
+  automationManualLoginStop: () =>
+    store<{ status: string }>("/api/shopify/automation/session/manual-login/stop", { method: "POST" }),
   automationActiveRun: () =>
     store<AutomationRunDto>("/api/shopify/automation/run/active").catch(() => null),
   automationRuns: (take = 20) =>

@@ -64,7 +64,7 @@ builder.Services.AddSingleton<IShopifyAdminAppClient>(sp =>
 builder.Services.AddScoped<IShopifyAutomationService, ShopifyAutomationService>();
 
 builder.Services.AddDbContext<StoreDbContext>(options =>
-    options.UseSqlite("Data Source=store.db"));
+    options.UseSqlite("Data Source=/app/data/store.db"));
 
 builder.Services.AddHostedService<BrainEventSubscriber>();
 
@@ -74,6 +74,18 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<StoreDbContext>();
     db.Database.EnsureCreated();
+
+    // Add new columns to existing tables (EnsureCreated won't alter existing tables)
+    foreach (var col in new[] { ("AutomationConfigs", "ShopifyEmail", "TEXT"), ("AutomationConfigs", "ShopifyPassword", "TEXT") })
+    {
+        try { db.Database.ExecuteSqlRaw($"ALTER TABLE {col.Item1} ADD COLUMN {col.Item2} {col.Item3}"); }
+        catch { /* column already exists */ }
+    }
+
+    // One-shot: reset MaxRetries=3 (old default) to 0. User asked for single-attempt mode;
+    // retries on real UI-automation failures usually just delay surfacing the real issue.
+    try { db.Database.ExecuteSqlRaw("UPDATE AutomationConfigs SET MaxRetries = 0 WHERE MaxRetries = 3"); }
+    catch { /* table may not exist yet */ }
 }
 
 app.UseHttpsRedirection();

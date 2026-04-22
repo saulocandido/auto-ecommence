@@ -15,12 +15,14 @@ public class ShopifyAutomationConfig
     public string ShopifyHost { get; set; } = string.Empty;
     public string DefaultSearch { get; set; } = string.Empty;
     public string AuthMode { get; set; } = "session"; // session | token | cookie
-    public int MaxRetries { get; set; } = 3;
+    public int MaxRetries { get; set; } = 0;
     public double MatchConfidenceThreshold { get; set; } = 0.6;
     public bool HeadlessMode { get; set; } = true;
     public bool UseApiFirst { get; set; } = true;
     public string? SessionCookie { get; set; }
     public string? AuthToken { get; set; }
+    public string? ShopifyEmail { get; set; }
+    public string? ShopifyPassword { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 

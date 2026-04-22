@@ -304,9 +304,11 @@ public class ShopifySessionManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ImportStorageStateAsync_AcceptsStorageStateObject_WritesFile()
+    public async Task ImportStorageStateAsync_AcceptsStorageStateObject_WithAuthCookie_ReturnsConnected()
     {
-        var stateJson = """{"cookies":[{"name":"x","value":"1","domain":".shopify.com","path":"/"}],"origins":[]}""";
+        // Must include a recognised auth cookie (e.g. koa.sid, _secure_admin_session_id_*)
+        // for the import to return "connected" — tracker cookies alone aren't enough.
+        var stateJson = """{"cookies":[{"name":"koa.sid","value":"abc","domain":"admin.shopify.com","path":"/"},{"name":"_shopify_y","value":"1","domain":".shopify.com","path":"/"}],"origins":[]}""";
         var status = await _sut.ImportStorageStateAsync(stateJson, CancellationToken.None);
         status.State.Should().Be("connected");
         status.StorageStateExists.Should().BeTrue();
@@ -314,14 +316,25 @@ public class ShopifySessionManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ImportStorageStateAsync_AcceptsCookieArray_WrapsIt()
+    public async Task ImportStorageStateAsync_CookieArrayWithoutAuthCookie_ReturnsLoginRequired()
     {
-        var arrayJson = """[{"name":"x","value":"1","domain":".shopify.com","path":"/"}]""";
+        // The 3 tracker cookies from shopify.com with no admin-session cookie: Import must
+        // NOT say "connected" — that was the false positive that misled the user earlier.
+        var arrayJson = """[{"name":"_shopify_y","value":"1","domain":".shopify.com","path":"/"}]""";
         var status = await _sut.ImportStorageStateAsync(arrayJson, CancellationToken.None);
-        status.State.Should().Be("connected");
+        status.State.Should().Be("login_required");
+        status.Message.Should().Contain("auth");
 
         var saved = await File.ReadAllTextAsync(_sut.StorageStatePath);
         saved.Should().Contain("\"cookies\"");
+    }
+
+    [Fact]
+    public async Task ImportStorageStateAsync_AcceptsCookieArrayWithKoaSid_ReturnsConnected()
+    {
+        var arrayJson = """[{"name":"koa.sid","value":"abc","domain":"admin.shopify.com","path":"/"}]""";
+        var status = await _sut.ImportStorageStateAsync(arrayJson, CancellationToken.None);
+        status.State.Should().Be("connected");
     }
 
     [Fact]

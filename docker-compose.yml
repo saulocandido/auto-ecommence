@@ -119,6 +119,7 @@ services:
       Shopify__RetryBaseDelayMs: ${SHOPIFY_RETRY_BASE_DELAY_MS:-500}
     ports:
       - "5110:8080"
+      - "6080:6080"
     restart: unless-stopped
     volumes:
       - store-management-data:/app/data
