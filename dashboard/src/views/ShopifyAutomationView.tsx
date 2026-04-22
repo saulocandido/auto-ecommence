@@ -366,9 +366,31 @@ export function ShopifyAutomationView() {
             📋 Paste Cookies Directly
           </button>
         </div>
+        <div className="mt-3 p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-slate-700 space-y-1.5">
+          <div className="font-semibold text-indigo-800">🎯 Recommended: one-command capture (takes ~30s)</div>
+          <div>
+            A Cookie-Editor export from <code className="bg-white px-1 rounded">shopify.com</code> alone
+            won't work — Shopify admin also needs cookies on the{" "}
+            <code className="bg-white px-1 rounded">admin.shopify.com</code> subdomain
+            (<code className="bg-white px-1 rounded">_secure_admin_session_*</code>,
+            <code className="bg-white px-1 rounded">_master_udr</code>,
+            <code className="bg-white px-1 rounded">shopify_user_t</code>).
+          </div>
+          <div>On your host machine, run:</div>
+          <pre className="bg-slate-900 text-slate-100 p-2 rounded text-[11px] overflow-x-auto">
+{`cd tools
+npm install
+npx playwright install chromium
+node capture-shopify-session.mjs http://localhost:5110`}
+          </pre>
+          <div className="text-slate-500">
+            A Chromium window opens, you log in to Shopify as normal, and the script
+            uploads the full session here automatically. No copy-paste.
+          </div>
+        </div>
         <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-          Click <strong>Login to Shopify</strong> — it opens Shopify in your browser, you log in,
-          then copy cookies back so the automation can reuse your session.
+          Alternatives: <strong>Login to Shopify</strong> (browser-assisted wizard) or
+          <strong> Paste Cookies Directly</strong> (advanced — must include admin.shopify.com cookies).
         </p>
       </Card>
 

@@ -1,0 +1,13 @@
+{
+  "name": "autocommerce-tools",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Host-side helpers for AutoCommerce (Shopify session capture, etc).",
+  "scripts": {
+    "capture": "node capture-shopify-session.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.49.0"
+  }
+}
