@@ -546,13 +546,36 @@ export function ShopifyAutomationView() {
           <div className="bg-white rounded-lg shadow-xl p-5 w-[600px] max-w-[90vw]"
                onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-semibold mb-2">Paste Cookies / Session JSON</h3>
-            <p className="text-xs text-slate-500 mb-3">
-              Paste a Playwright storage-state JSON or a cookies array.
-              Need help? Use the <button onClick={() => { setShowUploadModal(false); setShowLoginWizard(true); setLoginStep(1); }} className="text-indigo-600 underline">Login Wizard</button> instead.
-            </p>
+            <div className="text-xs text-slate-600 mb-3 space-y-2">
+              <p className="text-red-600 font-semibold">
+                ⚠ Three <code className="bg-slate-100 px-1 rounded">shopify.com</code> cookies on their own are <u>not</u> enough.
+                Shopify admin checks <code className="bg-slate-100 px-1 rounded">admin.shopify.com</code>-scoped
+                cookies like <code className="bg-slate-100 px-1 rounded">_secure_admin_session_id_*</code>,
+                <code className="bg-slate-100 px-1 rounded">_master_udr</code>,
+                <code className="bg-slate-100 px-1 rounded">shopify_user_t</code>.
+              </p>
+              <div>
+                <strong>Easiest way (Cookie-Editor browser extension):</strong>
+                <ol className="list-decimal list-inside ml-2 text-slate-500 space-y-0.5">
+                  <li>Open your Find Products URL in the browser where you're logged in.</li>
+                  <li>Click the Cookie-Editor extension icon → <em>Export as JSON</em> for the current domain.</li>
+                  <li>Do the same on <code className="bg-slate-100 px-1 rounded">admin.shopify.com</code> if it's a different domain.</li>
+                  <li>Paste the combined JSON below (the server merges both).</li>
+                </ol>
+              </div>
+              <div>
+                <strong>Best way (Playwright storageState):</strong>
+                run <code className="bg-slate-100 px-1 rounded">npx playwright codegen --save-storage=session.json https://admin.shopify.com</code>,
+                log in, close the codegen window, then paste the contents of <code className="bg-slate-100 px-1 rounded">session.json</code>.
+              </div>
+              <p className="text-slate-400">
+                After Save, we <u>automatically run Test</u> — if cookies are insufficient you'll see
+                "Redirected to login" / "Got the Shopify store picker" instead of a false "connected".
+              </p>
+            </div>
             <textarea value={uploadStateJson} onChange={e => setUploadStateJson(e.target.value)}
-              rows={12}
-              placeholder='{"cookies": [...], "origins": [...]}'
+              rows={10}
+              placeholder='{"cookies":[{"name":"_secure_admin_session_id_XXX","value":"...","domain":".admin.shopify.com",...}, ...], "origins":[]}'
               className="w-full border border-slate-300 rounded p-2 font-mono text-xs" />
             <div className="flex justify-end gap-2 mt-3">
               <button onClick={() => setShowUploadModal(false)} disabled={sessionBusy !== null}

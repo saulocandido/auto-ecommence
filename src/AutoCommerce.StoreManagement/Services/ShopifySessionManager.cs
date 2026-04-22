@@ -116,7 +116,9 @@ public class ShopifySessionManager : IShopifySessionManager, IAsyncDisposable
             }
 
             await page.WaitForTimeoutAsync(1500);
-            var diag = await LoginStateDetector.DetectAsync(page, ct);
+            var diag = await LoginStateDetector.DetectAsync(page, config.FindProductsUrl, ct);
+            _logger.LogInformation("Validate: landed on {Url} → {State} ({Notes})",
+                diag.Url, diag.State, diag.Notes ?? "-");
 
             // Persist any rotated cookies back to disk so automation picks them up.
             if (diag.State == LoginState.Authenticated)
@@ -125,12 +127,17 @@ public class ShopifySessionManager : IShopifySessionManager, IAsyncDisposable
                 catch (Exception ex) { _logger.LogWarning(ex, "Failed to persist rotated cookies after validation"); }
             }
 
+            var cookieHint = " Tip: paste the full Playwright storageState() output, or export ALL cookies from admin.shopify.com (including _secure_admin_session_id_* / _master_udr / shopify_user_t) — the three generic shopify.com cookies on their own are not enough.";
+
             return diag.State switch
             {
                 LoginState.Authenticated => WriteStatus(ShopifySessionState.Connected, $"Authenticated on {diag.Url}"),
-                LoginState.LoginPage => WriteStatus(ShopifySessionState.LoginRequired, "Shopify login page shown — session expired"),
-                LoginState.AccountSelection => WriteStatus(ShopifySessionState.LoginRequired, "Account picker shown — resume login"),
-                LoginState.NotInApp => WriteStatus(ShopifySessionState.LoginRequired, diag.Notes ?? "Not in admin app"),
+                LoginState.LoginPage => WriteStatus(ShopifySessionState.LoginRequired,
+                    $"Redirected to login ({diag.Url}) — session is not authenticated.{cookieHint}"),
+                LoginState.AccountSelection => WriteStatus(ShopifySessionState.LoginRequired,
+                    $"Got the Shopify store picker ({diag.Url}) — cookies exist but aren't scoped to the target store.{cookieHint}"),
+                LoginState.NotInApp => WriteStatus(ShopifySessionState.LoginRequired,
+                    $"Landed on {diag.Url} but not on the app path — session may be scoped to a different store.{cookieHint}"),
                 _ => WriteStatus(ShopifySessionState.Unknown, diag.Notes ?? "Could not classify page"),
             };
         }
@@ -179,7 +186,7 @@ public class ShopifySessionManager : IShopifySessionManager, IAsyncDisposable
             {
                 try
                 {
-                    lastDiag = await LoginStateDetector.DetectAsync(page, ct);
+                    lastDiag = await LoginStateDetector.DetectAsync(page, config.FindProductsUrl, ct);
                     if (lastDiag.State == LoginState.Authenticated) break;
                 }
                 catch { /* page may be mid-navigation */ }

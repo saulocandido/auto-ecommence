@@ -71,7 +71,18 @@ public class ShopifyAutomationController : ControllerBase
         if (_sessions == null) return StatusCode(503, new { error = "Session manager not available" });
         if (body == null || string.IsNullOrWhiteSpace(body.StorageState))
             return BadRequest(new { error = "StorageState JSON is required" });
-        return Ok(await _sessions.ImportStorageStateAsync(body.StorageState, ct));
+
+        // Step 1: save to disk.
+        var imported = await _sessions.ImportStorageStateAsync(body.StorageState, ct);
+        if (imported.State == "error") return Ok(imported);
+
+        // Step 2: IMMEDIATELY validate against Shopify admin so the UI doesn't report
+        // "connected" for a storage state that turns out to be authless.
+        var cfg = await LoadConfigDomainAsync(ct);
+        if (cfg == null || string.IsNullOrWhiteSpace(cfg.FindProductsUrl))
+            return Ok(imported); // no target URL configured yet; user can run Test later
+        var validated = await _sessions.ValidateAsync(cfg, ct);
+        return Ok(validated);
     }
 
     // ── Run management ──

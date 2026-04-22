@@ -48,7 +48,7 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
             await session.Page.WaitForTimeoutAsync(1500);
 
             // ── AUTH GATE ──
-            await EnsureAuthenticatedAsync(session.Page, ct);
+            await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
 
             var searchBox = await session.Page.WaitForSelectorAsync(
                 SelectorList("input[type='search']",
@@ -96,7 +96,7 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
             if (!session.Page.Url.StartsWith(findUrl, StringComparison.OrdinalIgnoreCase))
                 await session.Page.GotoAsync(findUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
 
-            await EnsureAuthenticatedAsync(session.Page, ct);
+            await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
 
             var card = await session.Page.QuerySelectorAsync($"[data-product-id='{externalId}']")
                      ?? await session.Page.QuerySelectorAsync($"[data-external-id='{externalId}']")
@@ -146,7 +146,7 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
             await session.Page.GotoAsync(url, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
             await session.Page.WaitForTimeoutAsync(1200);
 
-            await EnsureAuthenticatedAsync(session.Page, ct);
+            await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
 
             try
             {
@@ -179,7 +179,7 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
         {
             var url = config.ImportListUrl;
             await session.Page.GotoAsync(url, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-            await EnsureAuthenticatedAsync(session.Page, ct);
+            await EnsureAuthenticatedAsync(session.Page, CurrentTargetFor(config, session.Page.Url), ct);
 
             var row = await session.Page.QuerySelectorAsync($"[data-import-item-id='{importItemId}']")
                     ?? await session.Page.QuerySelectorAsync($"[data-external-id='{importItemId}']")
@@ -222,9 +222,24 @@ public class PlaywrightShopifyAdminAppClient : IShopifyAdminAppClient, IAsyncDis
 
     // ── auth gate ──
 
-    private async Task EnsureAuthenticatedAsync(IPage page, CancellationToken ct)
+    /// <summary>
+    /// Picks the "correct" target URL for the page's current location — so that when
+    /// we're on the import-list page, we check against <c>config.ImportListUrl</c>, and
+    /// when we're on find-products we check against <c>config.FindProductsUrl</c>.
+    /// This prevents the auth gate from firing false positives right after navigation.
+    /// </summary>
+    private static string CurrentTargetFor(ShopifyAutomationConfig config, string pageUrl)
     {
-        var diag = await LoginStateDetector.DetectAsync(page, ct);
+        var u = (pageUrl ?? "").ToLowerInvariant();
+        if (!string.IsNullOrEmpty(config.ImportListUrl) &&
+            u.StartsWith(config.ImportListUrl.ToLowerInvariant()))
+            return config.ImportListUrl;
+        return config.FindProductsUrl;
+    }
+
+    private async Task EnsureAuthenticatedAsync(IPage page, string? targetUrl, CancellationToken ct)
+    {
+        var diag = await LoginStateDetector.DetectAsync(page, targetUrl, ct);
         if (diag.State != LoginState.Authenticated && diag.State != LoginState.Unknown)
         {
             _logger.LogWarning("Auth gate tripped: state={State} url={Url} title={Title}",

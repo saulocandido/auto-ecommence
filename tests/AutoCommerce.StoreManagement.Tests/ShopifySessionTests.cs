@@ -15,20 +15,44 @@ namespace AutoCommerce.StoreManagement.Tests;
 
 public class LoginStateDetectorClassifierTests
 {
+    private const string Target = "https://admin.shopify.com/store/buydiro/apps/dropshipper-ai/app/find-products";
+
     [Theory]
+    // Login / account-picker detection
     [InlineData("https://accounts.shopify.com/login", false, false, false, LoginState.LoginPage)]
+    [InlineData("https://accounts.shopify.com/lookup?rid=abc&verify=xyz", false, false, false, LoginState.LoginPage)]
     [InlineData("https://admin.shopify.com/account/login", false, false, false, LoginState.LoginPage)]
     [InlineData("https://some.site/auth/login", false, false, false, LoginState.LoginPage)]
     [InlineData("https://somewhere.example.com/", true, true, false, LoginState.LoginPage)]
-    [InlineData("https://accounts.shopify.com/select_store", false, false, true, LoginState.LoginPage)]  // login-host wins
+    // Store picker: was a false-positive for "Authenticated" before the tightening —
+    // this is the bug users hit when their cookies aren't scoped to the target store.
+    [InlineData("https://admin.shopify.com/", false, false, false, LoginState.AccountSelection)]
+    [InlineData("https://admin.shopify.com/store", false, false, false, LoginState.AccountSelection)]
+    [InlineData("https://admin.shopify.com/store?redirect=x", false, false, false, LoginState.AccountSelection)]
     [InlineData("https://admin.shopify.com/store/x/apps/y", false, false, true, LoginState.AccountSelection)]
+    // Authenticated only when landed URL matches the target app path
     [InlineData("https://admin.shopify.com/store/buydiro/apps/dropshipper-ai/app/find-products", false, false, false, LoginState.Authenticated)]
+    [InlineData("https://admin.shopify.com/store/buydiro/apps/dropshipper-ai/app/import-list", false, false, false, LoginState.Authenticated)] // same app, diff page — still OK
+    // Inside admin.shopify.com but WRONG store/app → NotInApp, not Authenticated
+    [InlineData("https://admin.shopify.com/store/somebody-else/apps/dropshipper-ai/app/find-products", false, false, false, LoginState.NotInApp)]
+    [InlineData("https://admin.shopify.com/store/buydiro/settings", false, false, false, LoginState.NotInApp)]
+    // Clearly external / empty
     [InlineData("https://example.com/something", false, false, false, LoginState.NotInApp)]
     [InlineData("", false, false, false, LoginState.Unknown)]
-    public void Classify_ReturnsExpectedState(string url, bool email, bool password, bool chooser, LoginState expected)
+    public void Classify_WithTargetUrl_ReturnsExpectedState(string url, bool email, bool password, bool chooser, LoginState expected)
     {
-        var (state, _) = LoginStateDetector.Classify(url, email, password, chooser);
+        var (state, _, _) = LoginStateDetector.Classify(url, Target, email, password, chooser);
         state.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("https://admin.shopify.com/store/buydiro/apps/dropshipper-ai/app/find-products", true)]
+    [InlineData("https://admin.shopify.com/store/buydiro/apps/dropshipper-ai/app/import-list", true)]
+    [InlineData("https://admin.shopify.com/store/different/apps/dropshipper-ai/app/find-products", false)]
+    [InlineData("https://admin.shopify.com/store/buydiro/settings", false)]
+    public void IsOnTargetPath_ChecksStoreAndAppPrefix(string url, bool expected)
+    {
+        LoginStateDetector.IsOnTargetPath(url.ToLowerInvariant(), Target).Should().Be(expected);
     }
 }
 
@@ -72,7 +96,7 @@ public class ShopifyAutomationService_LoginRequiredTests : IAsyncLifetime
         _brain.Products[id] = MakeProduct(id, title: "Alpha Widget");
         _admin.ThrowOnSearch = () => new SessionExpiredException(
             new LoginDiagnostics(LoginState.LoginPage, "https://accounts.shopify.com/login",
-                "Login", true, true, true, false, false, "login page detected"));
+                "Login", true, true, true, false, false, false, "login page detected"));
 
         var runId = await StartAndExecuteRunAsync(id);
 
@@ -98,7 +122,7 @@ public class ShopifyAutomationService_LoginRequiredTests : IAsyncLifetime
         };
         _admin.ThrowOnPush = () => new SessionExpiredException(
             new LoginDiagnostics(LoginState.LoginPage, "https://accounts.shopify.com/login",
-                "Login", true, true, true, false, false, "expired"));
+                "Login", true, true, true, false, false, false, "expired"));
 
         var runId = await StartAndExecuteRunAsync(id);
 
@@ -122,7 +146,7 @@ public class ShopifyAutomationService_LoginRequiredTests : IAsyncLifetime
 
         // First run: search throws, run pauses.
         _admin.ThrowOnSearch = () => new SessionExpiredException(
-            new LoginDiagnostics(LoginState.LoginPage, "x", "x", true, true, true, false, false, "expired"));
+            new LoginDiagnostics(LoginState.LoginPage, "x", "x", true, true, true, false, false, false, "expired"));
         var runId = await StartAndExecuteRunAsync(id);
         (await _sut.GetRunAsync(runId, CancellationToken.None))!.Status.Should().Be("LoginRequired");
 
